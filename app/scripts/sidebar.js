@@ -16,12 +16,21 @@ class SideBar extends EventEmitter {
 		super();
 
 		this.hostCount = 0;
+		let sortOrder = localStorage.getItem(this.sortOrderKey);
+
+		try {
+			this._sortOrder = JSON.parse( sortOrder );
+		} catch(e) {
+			this._sortOrder = [];
+		}
 
 		this.listElement = document.getElementById('serverList');
 
 		servers.forEach((host) => {
 			this.add(host);
 		});
+
+		localStorage.setItem(this.sortOrderKey, JSON.stringify( this._sortOrder) );
 
 		servers.on('host-added', (hostUrl) => {
 			this.add(servers.get(hostUrl));
@@ -54,6 +63,10 @@ class SideBar extends EventEmitter {
 		}
 	}
 
+	get sortOrderKey() {
+		return 'rocket.chat.sortOrder';
+	}
+
 	add(host) {
 		var name = host.title.replace(/^https?:\/\/(?:www\.)?([^\/]+)(.*)/, '$1');
 		name = name.split('.');
@@ -77,12 +90,21 @@ class SideBar extends EventEmitter {
 		};
 		// img.src = `${host.url}/assets/favicon.svg?v=${Math.round(Math.random()*10000)}`;
 
+		// if the sortOrder is set, use it, other wise use the length of the sortOrder array and add to the end of it
+		var sortOrder = 0;
+		if( this._sortOrder.includes( host.url ) ) {
+			sortOrder = this._sortOrder.indexOf(host.url);
+		} else {
+			sortOrder = this._sortOrder.length;
+			this._sortOrder.push( host.url );
+		}
+
 		var hotkey = document.createElement('div');
 		hotkey.classList.add('name');
 		if (process.platform === 'darwin') {
-			hotkey.innerHTML = '⌘' + (++this.hostCount);
+			hotkey.innerHTML = '⌘' + (sortOrder);
 		} else {
-			hotkey.innerHTML = '^' + (++this.hostCount);
+			hotkey.innerHTML = '^' + (sortOrder);
 		}
 
 		var item = document.createElement('li');
@@ -93,21 +115,87 @@ class SideBar extends EventEmitter {
 		item.appendChild(hotkey);
 
 		item.dataset.host = host.url;
+		item.dataset.sortOrder = sortOrder;
 		item.setAttribute('server', host.url);
 		item.classList.add('instance');
+
+		//Drag'n'Drop
+		item.setAttribute('draggable', true);
+		item.ondragstart = (ev) => {
+			ev.dataTransfer.effectAllowed = 'move';
+			ev.dataTransfer.dropEffect = 'move';
+			ev.dataTransfer.setData("text/plain", host.url);
+		};
+
+		item.ondragenter = (ev) => {
+			let url = ev.dataTransfer.getData('text/plain')
+			let source = this.getByUrl( url );
+			if( this.isBefore( source, ev.target ) ) {
+				ev.currentTarget.parentNode.insertBefore( source, ev.currentTarget );
+			} else if ( ev.currentTarget !== ev.currentTarget.parentNode.lastChild ) {
+				ev.currentTarget.parentNode.insertBefore( source, ev.currentTarget.nextSibling );
+			} else {
+				ev.currentTarget.parentNode.appendChild( source );
+			}
+
+		};
+
+		// Once we're done dragging save the updated order
+		item.ondragend = (ev) => {
+			let newSortOrder = [];
+			let newSubMenu = [];
+			let children = ev.currentTarget.parentNode.children;
+			for( let sortOrder = 0; sortOrder < children.length; sortOrder++ ) {
+				let url = children[sortOrder].dataset.host;
+				newSortOrder.push( url  );
+				// Re-do hotkey visual hints
+				let hotkey = children[sortOrder].querySelector('div.name');
+				if (process.platform === 'darwin') {
+					hotkey.innerHTML = '⌘' + (sortOrder);
+				} else {
+					hotkey.innerHTML = '^' + (sortOrder);
+				}
+				// rebuild menu
+				newSubMenu.push( {
+					label: children[sortOrder].querySelector('div.tooltip').innerHTML,
+					accelerator: 'CmdOrCtrl+' + sortOrder,
+					position: 'before=server-list-separator',
+					id: url,
+					click: () => {
+						var mainWindow = remote.getCurrentWindow();
+						mainWindow.show();
+						this.emit('click', url);
+						servers.setActive(url);
+					}
+				} );
+			}
+			this._sortOrder = newSortOrder;
+			windowMenu.submenu = newSubMenu;
+			Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
+			localStorage.setItem(this.sortOrderKey, JSON.stringify( this._sortOrder) );
+		};
 
 		item.onclick = () => {
 			this.emit('click', host.url);
 			servers.setActive(host.url);
 		};
 
-		this.listElement.appendChild(item);
+		let child = this.listElement.firstElementChild;
+		if( child === null || this.listElement.lastElementChild.dataset.sortOrder < sortOrder ) {
+			this.listElement.appendChild(item);
+		}
+		else {
+			while( child.dataset.sortOrder < sortOrder ) {
+				child = child.nextElementSibling;
+			}
+			this.listElement.insertBefore( item, child );
+		}
 
 		serverListSeparator.visible = true;
 
 		var menuItem = {
 			label: host.title,
-			accelerator: 'CmdOrCtrl+' + this.hostCount,
+			accelerator: 'CmdOrCtrl+' + sortOrder,
 			position: 'before=server-list-separator',
 			id: host.url,
 			click: () => {
@@ -237,6 +325,17 @@ class SideBar extends EventEmitter {
 
 	isHidden() {
 		return localStorage.getItem('sidebar-closed') === 'true';
+	}
+
+	isBefore(a, b) {
+		if(a.parentNode == b.parentNode) {
+			for( let cur = a; cur; cur = cur.previousSibling ) {
+				if( cur === b ) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 }
 
